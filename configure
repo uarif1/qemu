@@ -300,6 +300,7 @@ vhost_crypto="$default_feature"
 vhost_scsi="$default_feature"
 vhost_vsock="$default_feature"
 vhost_user="no"
+virtio_vhost_user="$default_feature"
 vhost_user_fs="$default_feature"
 vhost_vdpa="$default_feature"
 rdma="$default_feature"
@@ -995,6 +996,10 @@ for opt do
   ;;
   --enable-vhost-user) vhost_user="yes"
   ;;
+  --disable-virtio-vhost-user) virtio_vhost_user="no"
+  ;;
+  --enable-virtio-vhost-user) virtio_vhost_user="yes"
+  ;;
   --disable-vhost-vdpa) vhost_vdpa="no"
   ;;
   --enable-vhost-vdpa) vhost_vdpa="yes"
@@ -1263,6 +1268,7 @@ cat << EOF
   vhost-crypto    vhost-user-crypto backend support
   vhost-kernel    vhost kernel backend support
   vhost-user      vhost-user backend support
+  virtio-vhost-user virtio-vhost-user backend support
   vhost-vdpa      vhost-vdpa kernel backend support
   opengl          opengl support
   gio             libgio support
@@ -1698,6 +1704,16 @@ fi
 test "$vhost_kernel" = "" && vhost_kernel=$linux
 if test "$vhost_kernel" = "yes" && test "$linux" != "yes"; then
   error_exit "vhost-kernel is only available on Linux"
+fi
+
+if test "$virtio_vhost_user" = "yes"; then
+  if test "$linux" != "yes"; then
+    error_exit "virtio-vhost-user is only available on Linux"
+  fi
+  # Allow taking address of packed member of struct VhostUserMsg
+  # when virtio_vhost_user is enabled
+  EXTRA_CFLAGS="$EXTRA_CFLAGS -Wno-address-of-packed-member"
+  EXTRA_CXXFLAGS="$EXTRA_CXXFLAGS -Wno-address-of-packed-member"
 fi
 
 # vhost-kernel devices
@@ -2892,6 +2908,9 @@ if test "$vhost_kernel" = "yes" ; then
 fi
 if test "$vhost_user" = "yes" ; then
   echo "CONFIG_VHOST_USER=y" >> $config_host_mak
+fi
+if test "$virtio_vhost_user" = "yes" ; then
+  echo "CONFIG_VIRTIO_VHOST_USER=y" >> $config_host_mak
 fi
 if test "$vhost_vdpa" = "yes" ; then
   echo "CONFIG_VHOST_VDPA=y" >> $config_host_mak

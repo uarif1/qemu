@@ -1887,7 +1887,7 @@ void qemu_put_virtqueue_element(VirtIODevice *vdev, QEMUFile *f,
 }
 
 /* virtio device */
-static void virtio_notify_vector(VirtIODevice *vdev, uint16_t vector)
+void virtio_notify_vector(VirtIODevice *vdev, uint16_t vector)
 {
     BusState *qbus = qdev_get_parent_bus(DEVICE(vdev));
     VirtioBusClass *k = VIRTIO_BUS_GET_CLASS(qbus);
@@ -2404,7 +2404,7 @@ void virtio_del_queue(VirtIODevice *vdev, int n)
     virtio_delete_queue(&vdev->vq[n]);
 }
 
-static void virtio_set_isr(VirtIODevice *vdev, int value)
+void virtio_set_isr(VirtIODevice *vdev, int value)
 {
     uint8_t old = qatomic_read(&vdev->isr);
 
