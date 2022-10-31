@@ -56,6 +56,7 @@
 
 /* See Linux kernel arch/arm64/include/asm/pvclock-abi.h */
 #define PVTIME_SIZE_PER_CPU 64
+#define PVLOCK_SIZE_PER_CPU 64
 
 enum {
     VIRT_FLASH,
@@ -86,6 +87,7 @@ enum {
     VIRT_ACPI_GED,
     VIRT_NVDIMM_ACPI,
     VIRT_PVTIME,
+    VIRT_PVLOCK,
     VIRT_LOWMEMMAP_LAST,
 };
 
@@ -129,6 +131,7 @@ struct VirtMachineClass {
     bool no_ged;   /* Machines < 4.2 have no support for ACPI GED device */
     bool kvm_no_adjvtime;
     bool no_kvm_steal_time;
+    bool no_kvm_pv_lock;
     bool acpi_expose_flash;
     bool no_secure_gpio;
     /* Machines < 6.2 have no support for describing cpu topology to guest */

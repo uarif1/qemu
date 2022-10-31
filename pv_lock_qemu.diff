@@ -1,0 +1,335 @@
+diff --git a/hw/arm/virt.c b/hw/arm/virt.c
+index cda9defe8f..c50e1371b7 100644
+--- a/hw/arm/virt.c
++++ b/hw/arm/virt.c
+@@ -154,6 +154,7 @@ static const MemMapEntry base_memmap[] = {
+     [VIRT_NVDIMM_ACPI] =        { 0x09090000, NVDIMM_ACPI_IO_LEN},
+     [VIRT_PVTIME] =             { 0x090a0000, 0x00010000 },
+     [VIRT_SECURE_GPIO] =        { 0x090b0000, 0x00001000 },
++    [VIRT_PVLOCK] =             { 0x090c0000, 0x00010000 },
+     [VIRT_MMIO] =               { 0x0a000000, 0x00000200 },
+     /* ...repeating for a total of NUM_VIRTIO_TRANSPORTS, each of that size */
+     [VIRT_PLATFORM_BUS] =       { 0x0c000000, 0x02000000 },
+@@ -1915,17 +1916,21 @@ static void finalize_gic_version(VirtMachineState *vms)
+ static void virt_cpu_post_init(VirtMachineState *vms, MemoryRegion *sysmem)
+ {
+     int max_cpus = MACHINE(vms)->smp.max_cpus;
+-    bool aarch64, pmu, steal_time;
++    bool aarch64, pmu, steal_time, pv_lock;
+     CPUState *cpu;
+ 
+     aarch64 = object_property_get_bool(OBJECT(first_cpu), "aarch64", NULL);
+     pmu = object_property_get_bool(OBJECT(first_cpu), "pmu", NULL);
+     steal_time = object_property_get_bool(OBJECT(first_cpu),
+                                           "kvm-steal-time", NULL);
++    pv_lock = object_property_get_bool(OBJECT(first_cpu),
++                                          "kvm-pv-lock", NULL);
+ 
+     if (kvm_enabled()) {
+         hwaddr pvtime_reg_base = vms->memmap[VIRT_PVTIME].base;
+         hwaddr pvtime_reg_size = vms->memmap[VIRT_PVTIME].size;
++        hwaddr pvlock_reg_base = vms->memmap[VIRT_PVLOCK].base;
++        hwaddr pvlock_reg_size = vms->memmap[VIRT_PVLOCK].size;
+ 
+         if (steal_time) {
+             MemoryRegion *pvtime = g_new(MemoryRegion, 1);
+@@ -1946,6 +1951,25 @@ static void virt_cpu_post_init(VirtMachineState *vms, MemoryRegion *sysmem)
+             memory_region_add_subregion(sysmem, pvtime_reg_base, pvtime);
+         }
+ 
++        if (pv_lock) {
++            MemoryRegion *pvlock = g_new(MemoryRegion, 1);
++            hwaddr pvlock_size = max_cpus * PVLOCK_SIZE_PER_CPU;
++
++            /* The memory region size must be a multiple of host page size. */
++            pvlock_size = REAL_HOST_PAGE_ALIGN(pvlock_size);
++
++            if (pvlock_size > pvlock_reg_size) {
++                error_report("pvlock requires a %" HWADDR_PRId
++                             " byte memory region for %d CPUs,"
++                             " but only %" HWADDR_PRId " has been reserved",
++                             pvlock_size, max_cpus, pvlock_reg_size);
++                exit(1);
++            }
++
++            memory_region_init_ram(pvlock, NULL, "pvlock", pvlock_size, NULL);
++            memory_region_add_subregion(sysmem, pvlock_reg_base, pvlock);
++        }
++
+         CPU_FOREACH(cpu) {
+             if (pmu) {
+                 assert(arm_feature(&ARM_CPU(cpu)->env, ARM_FEATURE_PMU));
+@@ -1958,6 +1982,10 @@ static void virt_cpu_post_init(VirtMachineState *vms, MemoryRegion *sysmem)
+                 kvm_arm_pvtime_init(cpu, pvtime_reg_base +
+                                          cpu->cpu_index * PVTIME_SIZE_PER_CPU);
+             }
++            if (pv_lock) {
++                kvm_arm_pvlock_init(cpu, pvlock_reg_base +
++                                         cpu->cpu_index * PVLOCK_SIZE_PER_CPU);
++            }
+         }
+     } else {
+         if (aarch64 && vms->highmem) {
+@@ -2142,6 +2170,11 @@ static void machvirt_init(MachineState *machine)
+             object_property_set_bool(cpuobj, "kvm-steal-time", false, NULL);
+         }
+ 
++        if (vmc->no_kvm_pv_lock &&
++            object_property_find(cpuobj, "kvm-pv-lock")) {
++            object_property_set_bool(cpuobj, "kvm-pv-lock", false, NULL);
++        }
++
+         if (vmc->no_pmu && object_property_find(cpuobj, "pmu")) {
+             object_property_set_bool(cpuobj, "pmu", false, NULL);
+         }
+@@ -3102,8 +3135,11 @@ DEFINE_VIRT_MACHINE_AS_LATEST(7, 2)
+ 
+ static void virt_machine_7_1_options(MachineClass *mc)
+ {
++    VirtMachineClass *vmc = VIRT_MACHINE_CLASS(OBJECT_CLASS(mc));
++
+     virt_machine_7_2_options(mc);
+     compat_props_add(mc->compat_props, hw_compat_7_1, hw_compat_7_1_len);
++    vmc->no_kvm_pv_lock = true;
+ }
+ DEFINE_VIRT_MACHINE(7, 1)
+ 
+diff --git a/include/hw/arm/virt.h b/include/hw/arm/virt.h
+index 6ec479ca2b..8441f511d8 100644
+--- a/include/hw/arm/virt.h
++++ b/include/hw/arm/virt.h
+@@ -56,6 +56,7 @@
+ 
+ /* See Linux kernel arch/arm64/include/asm/pvclock-abi.h */
+ #define PVTIME_SIZE_PER_CPU 64
++#define PVLOCK_SIZE_PER_CPU 64
+ 
+ enum {
+     VIRT_FLASH,
+@@ -86,6 +87,7 @@ enum {
+     VIRT_ACPI_GED,
+     VIRT_NVDIMM_ACPI,
+     VIRT_PVTIME,
++    VIRT_PVLOCK,
+     VIRT_LOWMEMMAP_LAST,
+ };
+ 
+@@ -129,6 +131,7 @@ struct VirtMachineClass {
+     bool no_ged;   /* Machines < 4.2 have no support for ACPI GED device */
+     bool kvm_no_adjvtime;
+     bool no_kvm_steal_time;
++    bool no_kvm_pv_lock;
+     bool acpi_expose_flash;
+     bool no_secure_gpio;
+     /* Machines < 6.2 have no support for describing cpu topology to guest */
+diff --git a/linux-headers/asm-arm64/kvm.h b/linux-headers/asm-arm64/kvm.h
+index 4bf2d7246e..578b146a18 100644
+--- a/linux-headers/asm-arm64/kvm.h
++++ b/linux-headers/asm-arm64/kvm.h
+@@ -402,6 +402,8 @@ enum {
+ #define   KVM_ARM_VCPU_TIMER_IRQ_PTIMER		1
+ #define KVM_ARM_VCPU_PVTIME_CTRL	2
+ #define   KVM_ARM_VCPU_PVTIME_IPA	0
++#define KVM_ARM_VCPU_PVLOCK_CTRL	3
++#define   KVM_ARM_VCPU_PVLOCK_IPA	0
+ 
+ /* KVM_IRQ_LINE irq field index values */
+ #define KVM_ARM_IRQ_VCPU2_SHIFT		28
+diff --git a/target/arm/cpu.h b/target/arm/cpu.h
+index 64fc03214c..7c8a17d1b3 100644
+--- a/target/arm/cpu.h
++++ b/target/arm/cpu.h
+@@ -937,6 +937,9 @@ struct ArchCPU {
+     /* KVM steal time */
+     OnOffAuto kvm_steal_time;
+ 
++    /* KVM pv-lock */
++    OnOffAuto kvm_pv_lock;
++
+     /* Uniprocessor system with MP extensions */
+     bool mp_is_up;
+ 
+diff --git a/target/arm/kvm.c b/target/arm/kvm.c
+index f022c644d2..90235ab1aa 100644
+--- a/target/arm/kvm.c
++++ b/target/arm/kvm.c
+@@ -208,6 +208,17 @@ static void kvm_steal_time_set(Object *obj, bool value, Error **errp)
+     ARM_CPU(obj)->kvm_steal_time = value ? ON_OFF_AUTO_ON : ON_OFF_AUTO_OFF;
+ }
+ 
++static bool kvm_pv_lock_get(Object *obj, Error **errp)
++{
++    return ARM_CPU(obj)->kvm_pv_lock != ON_OFF_AUTO_OFF;
++}
++
++static void kvm_pv_lock_set(Object *obj, bool value, Error **errp)
++{
++    ARM_CPU(obj)->kvm_pv_lock = value ? ON_OFF_AUTO_ON : ON_OFF_AUTO_OFF;
++}
++
++
+ /* KVM VCPU properties should be prefixed with "kvm-". */
+ void kvm_arm_add_vcpu_properties(Object *obj)
+ {
+@@ -229,6 +240,12 @@ void kvm_arm_add_vcpu_properties(Object *obj)
+                              kvm_steal_time_set);
+     object_property_set_description(obj, "kvm-steal-time",
+                                     "Set off to disable KVM steal time.");
++
++    cpu->kvm_pv_lock = ON_OFF_AUTO_AUTO;
++    object_property_add_bool(obj, "kvm-pv-lock", kvm_pv_lock_get,
++                             kvm_pv_lock_set);
++    object_property_set_description(obj, "kvm-pv-lock",
++                                    "Set off to disable KVM pv lock.");
+ }
+ 
+ bool kvm_arm_pmu_supported(void)
+diff --git a/target/arm/kvm64.c b/target/arm/kvm64.c
+index 1197253d12..1e4337b60e 100644
+--- a/target/arm/kvm64.c
++++ b/target/arm/kvm64.c
+@@ -467,6 +467,23 @@ void kvm_arm_pvtime_init(CPUState *cs, uint64_t ipa)
+     }
+ }
+ 
++void kvm_arm_pvlock_init(CPUState *cs, uint64_t ipa)
++{
++    struct kvm_device_attr attr = {
++        .group = KVM_ARM_VCPU_PVLOCK_CTRL,
++        .attr = KVM_ARM_VCPU_PVLOCK_IPA,
++        .addr = (uint64_t)&ipa,
++    };
++
++    if (ARM_CPU(cs)->kvm_pv_lock == ON_OFF_AUTO_OFF) {
++        return;
++    }
++    if (!kvm_arm_set_device_attr(cs, &attr, "PVLOCK IPA")) {
++        error_report("failed to init PVLOCK IPA");
++        abort();
++    }
++}
++
+ static int read_sys_reg32(int fd, uint32_t *pret, uint64_t id)
+ {
+     uint64_t ret;
+diff --git a/target/arm/kvm_arm.h b/target/arm/kvm_arm.h
+index 99017b635c..8602af1067 100644
+--- a/target/arm/kvm_arm.h
++++ b/target/arm/kvm_arm.h
+@@ -282,6 +282,14 @@ void kvm_arm_steal_time_finalize(ARMCPU *cpu, Error **errp);
+  */
+ bool kvm_arm_steal_time_supported(void);
+ 
++/**
++ * kvm_arm_pv_lock_supported:
++ *
++ * Returns: true if KVM can enable pv lock reporting
++ * and false otherwise.
++ */
++bool kvm_arm_pv_lock_supported(void);
++
+ /**
+  * kvm_arm_aarch32_supported:
+  *
+@@ -367,6 +375,15 @@ void kvm_arm_pmu_init(CPUState *cs);
+  */
+ void kvm_arm_pvtime_init(CPUState *cs, uint64_t ipa);
+ 
++/**
++ * kvm_arm_pvlock_init:
++ * @cs: CPUState
++ * @ipa: Per-vcpu guest physical base address of the pvlock structures
++ *
++ * Initializes PVLOCK for the VCPU, setting the PVLOCK IPA to @ipa.
++ */
++void kvm_arm_pvlock_init(CPUState *cs, uint64_t ipa);
++
+ int kvm_arm_set_irq(int cpu, int irqtype, int irq, int level);
+ 
+ #else
+@@ -395,6 +412,11 @@ static inline bool kvm_arm_steal_time_supported(void)
+     return false;
+ }
+ 
++static inline bool kvm_arm_pv_lock_supported(void)
++{
++    return false;
++}
++
+ /*
+  * These functions should never actually be called without KVM support.
+  */
+@@ -438,6 +460,11 @@ static inline void kvm_arm_steal_time_finalize(ARMCPU *cpu, Error **errp)
+     g_assert_not_reached();
+ }
+ 
++static inline void kvm_arm_pvlock_init(CPUState *cs, uint64_t ipa)
++{
++    g_assert_not_reached();
++}
++
+ static inline uint32_t kvm_arm_sve_get_vls(CPUState *cs)
+ {
+     g_assert_not_reached();
+diff --git a/target/arm/monitor.c b/target/arm/monitor.c
+index 80c64fa355..c5c636a8c7 100644
+--- a/target/arm/monitor.c
++++ b/target/arm/monitor.c
+@@ -95,7 +95,7 @@ static const char *cpu_model_advertised_features[] = {
+     "sve640", "sve768", "sve896", "sve1024", "sve1152", "sve1280",
+     "sve1408", "sve1536", "sve1664", "sve1792", "sve1920", "sve2048",
+     "kvm-no-adjvtime", "kvm-steal-time",
+-    "pauth", "pauth-impdef",
++    "pauth", "pauth-impdef", "kvm-pv-lock",
+     NULL
+ };
+ 
+diff --git a/tests/qtest/arm-cpu-features.c b/tests/qtest/arm-cpu-features.c
+index 5a14527386..191829fd15 100644
+--- a/tests/qtest/arm-cpu-features.c
++++ b/tests/qtest/arm-cpu-features.c
+@@ -450,6 +450,7 @@ static void test_query_cpu_model_expansion(const void *data)
+ 
+     assert_has_not_feature(qts, "max", "kvm-no-adjvtime");
+     assert_has_not_feature(qts, "max", "kvm-steal-time");
++    assert_has_not_feature(qts, "max", "kvm-pv-lock");
+ 
+     if (g_str_equal(qtest_get_arch(), "aarch64")) {
+         assert_has_feature_enabled(qts, "max", "aarch64");
+@@ -498,6 +499,7 @@ static void test_query_cpu_model_expansion_kvm(const void *data)
+ 
+     if (g_str_equal(qtest_get_arch(), "aarch64")) {
+         bool kvm_supports_steal_time;
++        bool kvm_supports_pv_lock;
+         bool kvm_supports_sve;
+         char max_name[8], name[8];
+         uint32_t max_vq, vq;
+@@ -526,6 +528,7 @@ static void test_query_cpu_model_expansion_kvm(const void *data)
+ 
+         resp = do_query_no_props(qts, "host");
+         kvm_supports_steal_time = resp_get_feature(resp, "kvm-steal-time");
++        kvm_supports_pv_lock = resp_get_feature(resp, "kvm-pv-lock");
+         kvm_supports_sve = resp_get_feature(resp, "sve");
+         vls = resp_get_sve_vls(resp);
+         qobject_unref(resp);
+@@ -536,6 +539,12 @@ static void test_query_cpu_model_expansion_kvm(const void *data)
+             assert_set_feature(qts, "host", "kvm-steal-time", true);
+         }
+ 
++        if (kvm_supports_pv_lock) {
++            /* If we have pv-lock then we should be able to toggle it. */
++            assert_set_feature(qts, "host", "kvm-pv-lock", false);
++            assert_set_feature(qts, "host", "kvm-pv-lock", true);
++        }
++
+         if (kvm_supports_sve) {
+             g_assert(vls != 0);
+             max_vq = 64 - __builtin_clzll(vls);
+@@ -597,6 +606,7 @@ static void test_query_cpu_model_expansion_kvm(const void *data)
+         assert_has_not_feature(qts, "host", "pmu");
+         assert_has_not_feature(qts, "host", "sve");
+         assert_has_not_feature(qts, "host", "kvm-steal-time");
++        assert_has_not_feature(qts, "host", "kvm-pv-lock");
+     }
+ 
+     qtest_quit(qts);

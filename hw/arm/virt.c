@@ -154,6 +154,7 @@ static const MemMapEntry base_memmap[] = {
     [VIRT_NVDIMM_ACPI] =        { 0x09090000, NVDIMM_ACPI_IO_LEN},
     [VIRT_PVTIME] =             { 0x090a0000, 0x00010000 },
     [VIRT_SECURE_GPIO] =        { 0x090b0000, 0x00001000 },
+    [VIRT_PVLOCK] =             { 0x090c0000, 0x00010000 },
     [VIRT_MMIO] =               { 0x0a000000, 0x00000200 },
     /* ...repeating for a total of NUM_VIRTIO_TRANSPORTS, each of that size */
     [VIRT_PLATFORM_BUS] =       { 0x0c000000, 0x02000000 },
@@ -1915,17 +1916,21 @@ static void finalize_gic_version(VirtMachineState *vms)
 static void virt_cpu_post_init(VirtMachineState *vms, MemoryRegion *sysmem)
 {
     int max_cpus = MACHINE(vms)->smp.max_cpus;
-    bool aarch64, pmu, steal_time;
+    bool aarch64, pmu, steal_time, pv_lock;
     CPUState *cpu;
 
     aarch64 = object_property_get_bool(OBJECT(first_cpu), "aarch64", NULL);
     pmu = object_property_get_bool(OBJECT(first_cpu), "pmu", NULL);
     steal_time = object_property_get_bool(OBJECT(first_cpu),
                                           "kvm-steal-time", NULL);
+    pv_lock = object_property_get_bool(OBJECT(first_cpu),
+                                          "kvm-pv-lock", NULL);
 
     if (kvm_enabled()) {
         hwaddr pvtime_reg_base = vms->memmap[VIRT_PVTIME].base;
         hwaddr pvtime_reg_size = vms->memmap[VIRT_PVTIME].size;
+        hwaddr pvlock_reg_base = vms->memmap[VIRT_PVLOCK].base;
+        hwaddr pvlock_reg_size = vms->memmap[VIRT_PVLOCK].size;
 
         if (steal_time) {
             MemoryRegion *pvtime = g_new(MemoryRegion, 1);
@@ -1946,6 +1951,25 @@ static void virt_cpu_post_init(VirtMachineState *vms, MemoryRegion *sysmem)
             memory_region_add_subregion(sysmem, pvtime_reg_base, pvtime);
         }
 
+        if (pv_lock) {
+            MemoryRegion *pvlock = g_new(MemoryRegion, 1);
+            hwaddr pvlock_size = max_cpus * PVLOCK_SIZE_PER_CPU;
+
+            /* The memory region size must be a multiple of host page size. */
+            pvlock_size = REAL_HOST_PAGE_ALIGN(pvlock_size);
+
+            if (pvlock_size > pvlock_reg_size) {
+                error_report("pvlock requires a %" HWADDR_PRId
+                             " byte memory region for %d CPUs,"
+                             " but only %" HWADDR_PRId " has been reserved",
+                             pvlock_size, max_cpus, pvlock_reg_size);
+                exit(1);
+            }
+
+            memory_region_init_ram(pvlock, NULL, "pvlock", pvlock_size, NULL);
+            memory_region_add_subregion(sysmem, pvlock_reg_base, pvlock);
+        }
+
         CPU_FOREACH(cpu) {
             if (pmu) {
                 assert(arm_feature(&ARM_CPU(cpu)->env, ARM_FEATURE_PMU));
@@ -1957,6 +1981,10 @@ static void virt_cpu_post_init(VirtMachineState *vms, MemoryRegion *sysmem)
             if (steal_time) {
                 kvm_arm_pvtime_init(cpu, pvtime_reg_base +
                                          cpu->cpu_index * PVTIME_SIZE_PER_CPU);
+            }
+            if (pv_lock) {
+                kvm_arm_pvlock_init(cpu, pvlock_reg_base +
+                                         cpu->cpu_index * PVLOCK_SIZE_PER_CPU);
             }
         }
     } else {
@@ -2140,6 +2168,11 @@ static void machvirt_init(MachineState *machine)
         if (vmc->no_kvm_steal_time &&
             object_property_find(cpuobj, "kvm-steal-time")) {
             object_property_set_bool(cpuobj, "kvm-steal-time", false, NULL);
+        }
+
+        if (vmc->no_kvm_pv_lock &&
+            object_property_find(cpuobj, "kvm-pv-lock")) {
+            object_property_set_bool(cpuobj, "kvm-pv-lock", false, NULL);
         }
 
         if (vmc->no_pmu && object_property_find(cpuobj, "pmu")) {
@@ -3102,8 +3135,11 @@ DEFINE_VIRT_MACHINE_AS_LATEST(7, 2)
 
 static void virt_machine_7_1_options(MachineClass *mc)
 {
+    VirtMachineClass *vmc = VIRT_MACHINE_CLASS(OBJECT_CLASS(mc));
+
     virt_machine_7_2_options(mc);
     compat_props_add(mc->compat_props, hw_compat_7_1, hw_compat_7_1_len);
+    vmc->no_kvm_pv_lock = true;
 }
 DEFINE_VIRT_MACHINE(7, 1)
 

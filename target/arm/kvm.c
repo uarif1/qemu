@@ -206,6 +206,17 @@ static void kvm_steal_time_set(Object *obj, bool value, Error **errp)
     ARM_CPU(obj)->kvm_steal_time = value ? ON_OFF_AUTO_ON : ON_OFF_AUTO_OFF;
 }
 
+static bool kvm_pv_lock_get(Object *obj, Error **errp)
+{
+    return ARM_CPU(obj)->kvm_pv_lock != ON_OFF_AUTO_OFF;
+}
+
+static void kvm_pv_lock_set(Object *obj, bool value, Error **errp)
+{
+    ARM_CPU(obj)->kvm_pv_lock = value ? ON_OFF_AUTO_ON : ON_OFF_AUTO_OFF;
+}
+
+
 /* KVM VCPU properties should be prefixed with "kvm-". */
 void kvm_arm_add_vcpu_properties(Object *obj)
 {
@@ -227,6 +238,12 @@ void kvm_arm_add_vcpu_properties(Object *obj)
                              kvm_steal_time_set);
     object_property_set_description(obj, "kvm-steal-time",
                                     "Set off to disable KVM steal time.");
+
+    cpu->kvm_pv_lock = ON_OFF_AUTO_AUTO;
+    object_property_add_bool(obj, "kvm-pv-lock", kvm_pv_lock_get,
+                             kvm_pv_lock_set);
+    object_property_set_description(obj, "kvm-pv-lock",
+                                    "Set off to disable KVM pv lock.");
 }
 
 bool kvm_arm_pmu_supported(void)

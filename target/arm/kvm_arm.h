@@ -283,6 +283,14 @@ void kvm_arm_steal_time_finalize(ARMCPU *cpu, Error **errp);
 bool kvm_arm_steal_time_supported(void);
 
 /**
+ * kvm_arm_pv_lock_supported:
+ *
+ * Returns: true if KVM can enable pv lock reporting
+ * and false otherwise.
+ */
+bool kvm_arm_pv_lock_supported(void);
+
+/**
  * kvm_arm_aarch32_supported:
  *
  * Returns: true if KVM can enable AArch32 mode
@@ -367,6 +375,15 @@ void kvm_arm_pmu_init(CPUState *cs);
  */
 void kvm_arm_pvtime_init(CPUState *cs, uint64_t ipa);
 
+/**
+ * kvm_arm_pvlock_init:
+ * @cs: CPUState
+ * @ipa: Per-vcpu guest physical base address of the pvlock structures
+ *
+ * Initializes PVLOCK for the VCPU, setting the PVLOCK IPA to @ipa.
+ */
+void kvm_arm_pvlock_init(CPUState *cs, uint64_t ipa);
+
 int kvm_arm_set_irq(int cpu, int irqtype, int irq, int level);
 
 #else
@@ -391,6 +408,11 @@ static inline bool kvm_arm_sve_supported(void)
 }
 
 static inline bool kvm_arm_steal_time_supported(void)
+{
+    return false;
+}
+
+static inline bool kvm_arm_pv_lock_supported(void)
 {
     return false;
 }
@@ -434,6 +456,11 @@ static inline void kvm_arm_pvtime_init(CPUState *cs, uint64_t ipa)
 }
 
 static inline void kvm_arm_steal_time_finalize(ARMCPU *cpu, Error **errp)
+{
+    g_assert_not_reached();
+}
+
+static inline void kvm_arm_pvlock_init(CPUState *cs, uint64_t ipa)
 {
     g_assert_not_reached();
 }
